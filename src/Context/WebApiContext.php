@@ -235,6 +235,19 @@ class WebApiContext implements ApiClientAwareContext
         $actual = (string) $this->response->getBody();
         Assertions::assertRegExp($expectedRegexp, $actual);
     }
+    
+    /**
+     * Checks that response body matches regex.
+     *
+     * @param string $regex
+     *
+     * @Then /^the response should match (?P<regex>.+)$/
+     */
+    public function theResponseShouldMatch($regex)
+    {
+        $actual = (string) $this->response->getBody();
+        Assertions::assertRegExp($regex, $actual);
+    }
 
     /**
      * Checks that response body doesn't contains specific text.
@@ -375,6 +388,7 @@ class WebApiContext implements ApiClientAwareContext
      * Removes a header identified by $headerName
      *
      * @param string $headerName
+     * @Given /^I remove the header "(?P<header>[^"]+)"$/
      */
     protected function removeHeader($headerName)
     {
@@ -403,6 +417,24 @@ class WebApiContext implements ApiClientAwareContext
         }
 
         return $this->client;
+    }
+    
+    protected function getRequest()
+    {
+        if (null === $this->request) {
+            throw new \RuntimeException('No request was created yet');
+        }
+
+        return $this->request;
+    }
+    
+    protected function getResponse()
+    {
+        if (null === $this->response) {
+            throw new \RuntimeException('No response set in WebApiContext. Make a request first');
+        }
+
+        return $this->response;
     }
 
     /**
