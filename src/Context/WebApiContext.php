@@ -18,440 +18,496 @@ use GuzzleHttp\Psr7\Request;
 use PHPUnit_Framework_Assert as Assertions;
 use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
+use JmesPath;
 
 /**
  * Provides web API description definitions.
  *
  * @author Konstantin Kudryashov <ever.zet@gmail.com>
  */
-class WebApiContext implements ApiClientAwareContext
-{
-    /**
-     * @var string
-     */
-    private $authorization;
+class WebApiContext implements ApiClientAwareContext {
 
-    /**
-     * @var ClientInterface
-     */
-    private $client;
+  /**
+   * @var string
+   */
+  private $authorization;
 
-    /**
-     * @var array
-     */
-    private $headers = array();
+  /**
+   * @var ClientInterface
+   */
+  private $client;
 
-    /**
-     * @var \GuzzleHttp\Message\RequestInterface|RequestInterface
-     */
-    private $request;
+  /**
+   * @var array
+   */
+  private $headers = array();
 
-    /**
-     * @var \GuzzleHttp\Message\ResponseInterface|ResponseInterface
-     */
-    private $response;
+  /**
+   * @var \GuzzleHttp\Message\RequestInterface|RequestInterface
+   */
+  private $request;
 
-    private $placeHolders = array();
+  /**
+   * @var \GuzzleHttp\Message\ResponseInterface|ResponseInterface
+   */
+  private $response;
+  private $placeHolders = array();
 
-    /**
-     * {@inheritdoc}
-     */
-    public function setClient(ClientInterface $client)
-    {
-        $this->client = $client;
+  /**
+   * {@inheritdoc}
+   */
+  public function setClient(ClientInterface $client) {
+    $this->client = $client;
+  }
+
+  /**
+   * Adds Basic Authentication header to next request.
+   *
+   * @param string $username
+   * @param string $password
+   *
+   * @Given /^I am authenticating as "([^"]*)" with "([^"]*)" password$/
+   */
+  public function iAmAuthenticatingAs($username, $password) {
+    $this->removeHeader('Authorization');
+    $this->authorization = base64_encode($username . ':' . $password);
+    $this->addHeader('Authorization', 'Basic ' . $this->authorization);
+  }
+
+  /**
+   * Sets a HTTP Header.
+   *
+   * @param string $name  header name
+   * @param string $value header value
+   *
+   * @Given /^I set header "([^"]*)" with value "([^"]*)"$/
+   */
+  public function iSetHeaderWithValue($name, $value) {
+    $this->addHeader($name, $value);
+  }
+
+  /**
+   * Adds multiple HTTP Headers.
+   * @Given /^I add the headers?:/
+   */
+  public function addHeaders(TableNode $table) {
+    $headers = $table->getRowsHash();
+    foreach ($headers as $key => $val) {
+      $this->addHeader($key, $this->replacePlaceHolder($val), false);
+    }
+  }
+
+  /**
+   * Sets multiple HTTP Headers, replacing if they exist.
+   * @Given /^I set the headers?:/
+   */
+  public function setHeaders(TableNode $table) {
+    $headers = $table->getRowsHash();
+    foreach ($headers as $key => $val) {
+      $this->addHeader($key, $this->replacePlaceHolder($val), true);
+    }
+  }
+
+  /**
+   * Sends HTTP request to specific relative URL.
+   *
+   * @param string $method request method
+   * @param string $url    relative url
+   *
+   * @When /^(?:I )?send a ([A-Z]+) request to "([^"]+)"$/
+   */
+  public function iSendARequest($method, $url) {
+    $url = $this->prepareUrl($url);
+
+    if (version_compare(ClientInterface::VERSION, '6.0', '>=')) {
+      $this->request = new Request($method, $url, $this->headers);
+    }
+    else {
+      $this->request = $this->getClient()->createRequest($method, $url);
+      if (!empty($this->headers)) {
+        $this->request->addHeaders($this->headers);
+      }
     }
 
-    /**
-     * Adds Basic Authentication header to next request.
-     *
-     * @param string $username
-     * @param string $password
-     *
-     * @Given /^I am authenticating as "([^"]*)" with "([^"]*)" password$/
-     */
-    public function iAmAuthenticatingAs($username, $password)
-    {
-        $this->removeHeader('Authorization');
-        $this->authorization = base64_encode($username . ':' . $password);
-        $this->addHeader('Authorization', 'Basic ' . $this->authorization);
+    $this->sendRequest();
+  }
+
+  /**
+   * Sends HTTP request to specific URL with field values from Table.
+   *
+   * @param string    $method request method
+   * @param string    $url    relative url
+   * @param TableNode $post   table of post values
+   *
+   * @When /^(?:I )?send a ([A-Z]+) request to "([^"]+)" with values:$/
+   */
+  public function iSendARequestWithValues($method, $url, TableNode $post) {
+    $url = $this->prepareUrl($url);
+    $fields = array();
+
+    foreach ($post->getRowsHash() as $key => $val) {
+      $fields[$key] = $this->replacePlaceHolder($val);
     }
 
-    /**
-     * Sets a HTTP Header.
-     *
-     * @param string $name  header name
-     * @param string $value header value
-     *
-     * @Given /^I set header "([^"]*)" with value "([^"]*)"$/
-     */
-    public function iSetHeaderWithValue($name, $value)
-    {
-        $this->addHeader($name, $value);
+    $bodyOption = array(
+      'body' => json_encode($fields),
+    );
+
+    if (version_compare(ClientInterface::VERSION, '6.0', '>=')) {
+      $this->request = new Request($method, $url, $this->headers, $bodyOption['body']);
+    }
+    else {
+      $this->request = $this->getClient()->createRequest($method, $url, $bodyOption);
+      if (!empty($this->headers)) {
+        $this->request->addHeaders($this->headers);
+      }
     }
 
-    /**
-     * Sends HTTP request to specific relative URL.
-     *
-     * @param string $method request method
-     * @param string $url    relative url
-     *
-     * @When /^(?:I )?send a ([A-Z]+) request to "([^"]+)"$/
-     */
-    public function iSendARequest($method, $url)
-    {
-        $url = $this->prepareUrl($url);
+    $this->sendRequest();
+  }
 
-        if (version_compare(ClientInterface::VERSION, '6.0', '>=')) {
-            $this->request = new Request($method, $url, $this->headers);
-        } else {
-            $this->request = $this->getClient()->createRequest($method, $url);
-            if (!empty($this->headers)) {
-                $this->request->addHeaders($this->headers);
-            }
-        }
+  /**
+   * Sends HTTP request to specific URL with raw body from PyString.
+   *
+   * @param string       $method request method
+   * @param string       $url    relative url
+   * @param PyStringNode $string request body
+   *
+   * @When /^(?:I )?send a ([A-Z]+) request to "([^"]+)" with body:$/
+   */
+  public function iSendARequestWithBody($method, $url, PyStringNode $string) {
+    $url = $this->prepareUrl($url);
+    $string = $this->replacePlaceHolder(trim($string));
 
-        $this->sendRequest();
+    if (version_compare(ClientInterface::VERSION, '6.0', '>=')) {
+      $this->request = new Request($method, $url, $this->headers, $string);
+    }
+    else {
+      $this->request = $this->getClient()->createRequest(
+          $method, $url, array(
+        'headers' => $this->getHeaders(),
+        'body' => $string,
+          )
+      );
     }
 
-    /**
-     * Sends HTTP request to specific URL with field values from Table.
-     *
-     * @param string    $method request method
-     * @param string    $url    relative url
-     * @param TableNode $post   table of post values
-     *
-     * @When /^(?:I )?send a ([A-Z]+) request to "([^"]+)" with values:$/
-     */
-    public function iSendARequestWithValues($method, $url, TableNode $post)
-    {
-        $url = $this->prepareUrl($url);
-        $fields = array();
+    $this->sendRequest();
+  }
 
-        foreach ($post->getRowsHash() as $key => $val) {
-            $fields[$key] = $this->replacePlaceHolder($val);
-        }
+  /**
+   * Sends HTTP request to specific URL with form data from PyString.
+   *
+   * @param string       $method request method
+   * @param string       $url    relative url
+   * @param PyStringNode $body   request body
+   *
+   * @When /^(?:I )?send a ([A-Z]+) request to "([^"]+)" with form data:$/
+   */
+  public function iSendARequestWithFormData($method, $url, PyStringNode $body) {
+    $url = $this->prepareUrl($url);
+    $body = $this->replacePlaceHolder(trim($body));
 
-        $bodyOption = array(
-          'body' => json_encode($fields),
-        );
+    $fields = array();
+    parse_str(implode('&', explode("\n", $body)), $fields);
 
-        if (version_compare(ClientInterface::VERSION, '6.0', '>=')) {
-            $this->request = new Request($method, $url, $this->headers, $bodyOption['body']);
-        } else {
-            $this->request = $this->getClient()->createRequest($method, $url, $bodyOption);
-            if (!empty($this->headers)) {
-                $this->request->addHeaders($this->headers);
-            }
-        }
-
-        $this->sendRequest();
+    if (version_compare(ClientInterface::VERSION, '6.0', '>=')) {
+      $this->request = new Request($method, $url, ['Content-Type' => 'application/x-www-form-urlencoded'], http_build_query($fields, null, '&'));
+    }
+    else {
+      $this->request = $this->getClient()->createRequest($method, $url);
+      /** @var \GuzzleHttp\Post\PostBodyInterface $requestBody */
+      $requestBody = $this->request->getBody();
+      foreach ($fields as $key => $value) {
+        $requestBody->setField($key, $value);
+      }
     }
 
-    /**
-     * Sends HTTP request to specific URL with raw body from PyString.
-     *
-     * @param string       $method request method
-     * @param string       $url    relative url
-     * @param PyStringNode $string request body
-     *
-     * @When /^(?:I )?send a ([A-Z]+) request to "([^"]+)" with body:$/
-     */
-    public function iSendARequestWithBody($method, $url, PyStringNode $string)
-    {
-        $url = $this->prepareUrl($url);
-        $string = $this->replacePlaceHolder(trim($string));
+    $this->sendRequest();
+  }
 
-        if (version_compare(ClientInterface::VERSION, '6.0', '>=')) {
-            $this->request = new Request($method, $url, $this->headers, $string);
-        } else {
-            $this->request = $this->getClient()->createRequest(
-                $method,
-                $url,
-                array(
-                    'headers' => $this->getHeaders(),
-                    'body' => $string,
-                )
-            );
-        }
+  /**
+   * Checks that response has specific status code.
+   *
+   * @param string $code status code
+   *
+   * @Then /^(?:the )?response code should be (\d+)$/
+   */
+  public function theResponseCodeShouldBe($code) {
+    $expected = intval($code);
+    $actual = intval($this->response->getStatusCode());
+    Assertions::assertSame($expected, $actual);
+  }
 
-        $this->sendRequest();
+  /**
+   * Checks that response body contains specific text.
+   *
+   * @param string $text
+   *
+   * @Then /^(?:the )?response should contain "([^"]*)"$/
+   */
+  public function theResponseShouldContain($text) {
+    $expectedRegexp = '/' . preg_quote($text) . '/i';
+    $actual = (string) $this->response->getBody();
+    Assertions::assertRegExp($expectedRegexp, $actual);
+  }
+
+  /**
+   * Checks that response body matches regex.
+   *
+   * @param string $regex
+   *
+   * @Then /^the response should match (?P<regex>.+)$/
+   */
+  public function theResponseShouldMatch($regex) {
+    $actual = (string) $this->response->getBody();
+    Assertions::assertRegExp($regex, $actual);
+  }
+
+  /**
+   * Checks that response body doesn't contains specific text.
+   *
+   * @param string $text
+   *
+   * @Then /^(?:the )?response should not contain "([^"]*)"$/
+   */
+  public function theResponseShouldNotContain($text) {
+    $expectedRegexp = '/' . preg_quote($text) . '/';
+    $actual = (string) $this->response->getBody();
+    Assertions::assertNotRegExp($expectedRegexp, $actual);
+  }
+
+  /**
+   * Checks that response body contains JSON from PyString.
+   *
+   * Do not check that the response body /only/ contains the JSON from PyString,
+   *
+   * @param PyStringNode $jsonString
+   *
+   * @throws \RuntimeException
+   *
+   * @Then /^(?:the )?response should contain json:$/
+   */
+  public function theResponseShouldContainJson(PyStringNode $jsonString) {
+    $etalon = json_decode($this->replacePlaceHolder($jsonString->getRaw()), true);
+    $actual = json_decode($this->response->getBody(), true);
+
+    if (null === $etalon) {
+      throw new \RuntimeException(
+      "Can not convert etalon to json:\n" . $this->replacePlaceHolder($jsonString->getRaw())
+      );
     }
 
-    /**
-     * Sends HTTP request to specific URL with form data from PyString.
-     *
-     * @param string       $method request method
-     * @param string       $url    relative url
-     * @param PyStringNode $body   request body
-     *
-     * @When /^(?:I )?send a ([A-Z]+) request to "([^"]+)" with form data:$/
-     */
-    public function iSendARequestWithFormData($method, $url, PyStringNode $body)
-    {
-        $url = $this->prepareUrl($url);
-        $body = $this->replacePlaceHolder(trim($body));
-
-        $fields = array();
-        parse_str(implode('&', explode("\n", $body)), $fields);
-
-        if (version_compare(ClientInterface::VERSION, '6.0', '>=')) {
-            $this->request = new Request($method, $url, ['Content-Type' => 'application/x-www-form-urlencoded'], http_build_query($fields, null, '&'));
-        } else {
-            $this->request = $this->getClient()->createRequest($method, $url);
-            /** @var \GuzzleHttp\Post\PostBodyInterface $requestBody */
-            $requestBody = $this->request->getBody();
-            foreach ($fields as $key => $value) {
-                $requestBody->setField($key, $value);
-            }
-        }
-
-        $this->sendRequest();
+    if (null === $actual) {
+      throw new \RuntimeException(
+      "Can not convert actual to json:\n" . $this->replacePlaceHolder((string) $this->response->getBody())
+      );
     }
 
-    /**
-     * Checks that response has specific status code.
-     *
-     * @param string $code status code
-     *
-     * @Then /^(?:the )?response code should be (\d+)$/
-     */
-    public function theResponseCodeShouldBe($code)
-    {
-        $expected = intval($code);
-        $actual = intval($this->response->getStatusCode());
-        Assertions::assertSame($expected, $actual);
+    $this->compareArrays($etalon, $actual);
+  }
+
+  /**
+   * Prints last response body.
+   *
+   * @Then print response
+   */
+  public function printResponse() {
+    $request = $this->request;
+    $response = $this->response;
+
+    echo sprintf(
+        "%s %s => %d:\n%s", $request->getMethod(), (string) ($request instanceof RequestInterface ? $request->getUri() : $request->getUrl()), $response->getStatusCode(), (string) $response->getBody()
+    );
+  }
+
+  /**
+   * Prepare URL by replacing placeholders and trimming slashes.
+   *
+   * @param string $url
+   *
+   * @return string
+   */
+  private function prepareUrl($url) {
+    return ltrim($this->replacePlaceHolder($url), '/');
+  }
+
+  /**
+   * Sets place holder for replacement.
+   *
+   * you can specify placeholders, which will
+   * be replaced in URL, request or response body.
+   *
+   * @param string $key   token name
+   * @param string $value replace value
+   */
+  public function setPlaceHolder($key, $value) {
+    $this->placeHolders[$key] = $value;
+  }
+
+  /**
+   * Sets placeholder for replacement.
+   *
+   * you can specify placeholders, which will
+   * be replaced in URL, request or response body.
+   *
+   * @param string $key   placeholder key
+   * @Given /^I get the placeholder "(?P<key>[^"]+)" from the response body$/
+   */
+  public function setPlaceholderFromResponseBody($key) {
+    $body = (string) $this->getResponse()->getBody();
+    if (empty($body))
+      throw new RuntimeException("Last response body is empty");
+    $this->setPlaceHolder($key, $body);
+  }
+
+  /**
+   * Sets placeholder for replacement from json property.
+   *
+   * you can specify placeholders, which will
+   * be replaced in URL, request or response body.
+   *
+   * @param string $key   placeholder key
+   * @param string $path  json path (https://github.com/jmespath/jmespath.php)
+   * @Given /^I get the placeholder "(?P<key>[^"]+)" from the json path "(?P<path>[^"]+)"$/
+   */
+  public function setPlaceholderFromJson($key, $path) {
+    $json = $this->getJsonFromLastResponse();
+    $value = JmesPath\search($path, $json);
+    $this->setPlaceHolder($key, $value);
+  }
+
+  /**
+   * Sets placeholder for replacement.
+   *
+   * you can specify placeholders, which will
+   * be replaced in URL, request or response body.
+   *
+   * @param string $key   token name
+   * @param string $value replace value
+   * @Given /^I get the placeholder "(?P<key>[^"]+)" from response header "(?P<header>[^"]+)"$/
+   */
+  public function setPlaceholderFromHeader($key, $header) {
+    $value = end($this->getResponse()->getHeader($header));
+    if (null === $value)
+      throw new \RuntimeException("header {$key} is not defined");
+    $this->setPlaceHolder($key, $value);
+  }
+
+  /**
+   * Replaces placeholders in provided text.
+   *
+   * @param string $string
+   *
+   * @return string
+   */
+  protected function replacePlaceHolder($string) {
+    foreach ($this->placeHolders as $key => $val) {
+      $string = str_replace($key, $val, $string);
     }
 
-    /**
-     * Checks that response body contains specific text.
-     *
-     * @param string $text
-     *
-     * @Then /^(?:the )?response should contain "([^"]*)"$/
-     */
-    public function theResponseShouldContain($text)
-    {
-        $expectedRegexp = '/' . preg_quote($text) . '/i';
-        $actual = (string) $this->response->getBody();
-        Assertions::assertRegExp($expectedRegexp, $actual);
+    return $string;
+  }
+
+  /**
+   * Returns headers, that will be used to send requests.
+   *
+   * @return array
+   */
+  protected function getHeaders() {
+    return $this->headers;
+  }
+
+  /**
+   * Adds header
+   *
+   * @param string $name
+   * @param string $value
+   */
+  protected function addHeader($name, $value, $replace = FALSE) {
+    if (!$replace && isset($this->headers[$name])) {
+      if (!is_array($this->headers[$name])) {
+        $this->headers[$name] = array($this->headers[$name]);
+      }
+
+      $this->headers[$name][] = $value;
     }
-    
-    /**
-     * Checks that response body matches regex.
-     *
-     * @param string $regex
-     *
-     * @Then /^the response should match (?P<regex>.+)$/
-     */
-    public function theResponseShouldMatch($regex)
-    {
-        $actual = (string) $this->response->getBody();
-        Assertions::assertRegExp($regex, $actual);
+    else {
+      $this->headers[$name] = $value;
     }
+  }
 
-    /**
-     * Checks that response body doesn't contains specific text.
-     *
-     * @param string $text
-     *
-     * @Then /^(?:the )?response should not contain "([^"]*)"$/
-     */
-    public function theResponseShouldNotContain($text)
-    {
-        $expectedRegexp = '/' . preg_quote($text) . '/';
-        $actual = (string) $this->response->getBody();
-        Assertions::assertNotRegExp($expectedRegexp, $actual);
+  /**
+   * Removes a header identified by $headerName
+   *
+   * @param string $headerName
+   * @Given /^I remove the header "(?P<header>[^"]+)"$/
+   */
+  protected function removeHeader($headerName) {
+    if (array_key_exists($headerName, $this->headers)) {
+      unset($this->headers[$headerName]);
     }
+  }
 
-    /**
-     * Checks that response body contains JSON from PyString.
-     *
-     * Do not check that the response body /only/ contains the JSON from PyString,
-     *
-     * @param PyStringNode $jsonString
-     *
-     * @throws \RuntimeException
-     *
-     * @Then /^(?:the )?response should contain json:$/
-     */
-    public function theResponseShouldContainJson(PyStringNode $jsonString)
-    {
-        $etalon = json_decode($this->replacePlaceHolder($jsonString->getRaw()), true);
-        $actual = json_decode($this->response->getBody(), true);
+  private function sendRequest() {
+    try {
+      $this->response = $this->getClient()->send($this->request);
+    }
+    catch (RequestException $e) {
+      $this->response = $e->getResponse();
 
-        if (null === $etalon) {
-            throw new \RuntimeException(
-              "Can not convert etalon to json:\n" . $this->replacePlaceHolder($jsonString->getRaw())
-            );
-        }
+      if (null === $this->response) {
+        throw $e;
+      }
+    }
+  }
 
-        if (null === $actual) {
-            throw new \RuntimeException(
-              "Can not convert actual to json:\n" . $this->replacePlaceHolder((string) $this->response->getBody())
-            );
-        }
-
-        $this->compareArrays($etalon, $actual);
+  private function getClient() {
+    if (null === $this->client) {
+      throw new \RuntimeException('Client has not been set in WebApiContext');
     }
 
-    /**
-     * Prints last response body.
-     *
-     * @Then print response
-     */
-    public function printResponse()
-    {
-        $request = $this->request;
-        $response = $this->response;
+    return $this->client;
+  }
 
-        echo sprintf(
-            "%s %s => %d:\n%s",
-            $request->getMethod(),
-            (string) ($request instanceof RequestInterface ? $request->getUri() : $request->getUrl()),
-            $response->getStatusCode(),
-            (string) $response->getBody()
-        );
+  protected function getRequest() {
+    if (null === $this->request) {
+      throw new \RuntimeException('No request was created yet');
     }
 
-    /**
-     * Prepare URL by replacing placeholders and trimming slashes.
-     *
-     * @param string $url
-     *
-     * @return string
-     */
-    private function prepareUrl($url)
-    {
-        return ltrim($this->replacePlaceHolder($url), '/');
+    return $this->request;
+  }
+
+  protected function getResponse() {
+    if (null === $this->response) {
+      throw new \RuntimeException('No response set in WebApiContext. Make a request first');
     }
 
-    /**
-     * Sets place holder for replacement.
-     *
-     * you can specify placeholders, which will
-     * be replaced in URL, request or response body.
-     *
-     * @param string $key   token name
-     * @param string $value replace value
-     */
-    public function setPlaceHolder($key, $value)
-    {
-        $this->placeHolders[$key] = $value;
+    return $this->response;
+  }
+
+  protected function getJsonFromLastResponse() {
+    $json = json_decode($this->getResponse()->getBody(), true);
+    if (json_last_error() !== JSON_ERROR_NONE)
+      throw new RuntimeException("Last response body doesn't have valid json");
+    return $json;
+  }
+
+  /**
+   * @param array $etalon
+   * @param array $actual
+   */
+  private function compareArrays(array $etalon, array $actual) {
+    Assertions::assertGreaterThanOrEqual(count($etalon), count($actual));
+    foreach ($etalon as $key => $needle) {
+      Assertions::assertArrayHasKey($key, $actual);
+
+      if (is_array($needle)) {
+        $this->compareArrays($etalon[$key], $actual[$key]);
+      }
+      else {
+        Assertions::assertEquals($etalon[$key], $actual[$key]);
+      }
     }
+  }
 
-    /**
-     * Replaces placeholders in provided text.
-     *
-     * @param string $string
-     *
-     * @return string
-     */
-    protected function replacePlaceHolder($string)
-    {
-        foreach ($this->placeHolders as $key => $val) {
-            $string = str_replace($key, $val, $string);
-        }
-
-        return $string;
-    }
-
-    /**
-     * Returns headers, that will be used to send requests.
-     *
-     * @return array
-     */
-    protected function getHeaders()
-    {
-        return $this->headers;
-    }
-
-    /**
-     * Adds header
-     *
-     * @param string $name
-     * @param string $value
-     */
-    protected function addHeader($name, $value)
-    {
-        if (isset($this->headers[$name])) {
-            if (!is_array($this->headers[$name])) {
-                $this->headers[$name] = array($this->headers[$name]);
-            }
-
-            $this->headers[$name][] = $value;
-        } else {
-            $this->headers[$name] = $value;
-        }
-    }
-
-    /**
-     * Removes a header identified by $headerName
-     *
-     * @param string $headerName
-     * @Given /^I remove the header "(?P<header>[^"]+)"$/
-     */
-    protected function removeHeader($headerName)
-    {
-        if (array_key_exists($headerName, $this->headers)) {
-            unset($this->headers[$headerName]);
-        }
-    }
-
-    private function sendRequest()
-    {
-        try {
-            $this->response = $this->getClient()->send($this->request);
-        } catch (RequestException $e) {
-            $this->response = $e->getResponse();
-
-            if (null === $this->response) {
-                throw $e;
-            }
-        }
-    }
-
-    private function getClient()
-    {
-        if (null === $this->client) {
-            throw new \RuntimeException('Client has not been set in WebApiContext');
-        }
-
-        return $this->client;
-    }
-    
-    protected function getRequest()
-    {
-        if (null === $this->request) {
-            throw new \RuntimeException('No request was created yet');
-        }
-
-        return $this->request;
-    }
-    
-    protected function getResponse()
-    {
-        if (null === $this->response) {
-            throw new \RuntimeException('No response set in WebApiContext. Make a request first');
-        }
-
-        return $this->response;
-    }
-
-    /**
-     * @param array $etalon
-     * @param array $actual
-     */
-    private function compareArrays(array $etalon, array $actual)
-    {
-        Assertions::assertGreaterThanOrEqual(count($etalon), count($actual));
-        foreach ($etalon as $key => $needle) {
-            Assertions::assertArrayHasKey($key, $actual);
-
-            if (is_array($needle)) {
-                $this->compareArrays($etalon[$key], $actual[$key]);
-            } else {
-                Assertions::assertEquals($etalon[$key], $actual[$key]);
-            }
-        }
-    }
 }
